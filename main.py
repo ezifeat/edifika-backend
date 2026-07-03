@@ -235,7 +235,7 @@ class UserOut(BaseModel):
     ativo: bool
     aprovado: bool
     created_at: datetime
-    class Config: from_attributes = True
+    model_config = {"from_attributes": True}
 
 class ObraCreate(BaseModel):
     titulo: str
@@ -259,7 +259,7 @@ class ObraOut(BaseModel):
     valor_total_cliente: float
     caucao_paga: bool
     created_at: datetime
-    class Config: from_attributes = True
+    model_config = {"from_attributes": True}
 
 class PropostaCreate(BaseModel):
     leilao_id: str
@@ -283,7 +283,7 @@ class NotificacaoOut(BaseModel):
     descricao: Optional[str]
     lida: bool
     created_at: datetime
-    class Config: from_attributes = True
+    model_config = {"from_attributes": True}
 
 # ── HELPERS ──
 def get_db():
