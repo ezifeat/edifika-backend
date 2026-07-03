@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy import create_engine, Column, String, Float, Boolean, DateTime, Integer, Text, ForeignKey, Enum
@@ -9,7 +9,11 @@ from typing import Optional, List
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-import uuid, os, enum
+import uuid, os, enum, json, tempfile
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -235,7 +239,7 @@ class UserOut(BaseModel):
     ativo: bool
     aprovado: bool
     created_at: datetime
-    model_config = {"from_attributes": True}
+    class Config: from_attributes = True
 
 class ObraCreate(BaseModel):
     titulo: str
@@ -259,7 +263,7 @@ class ObraOut(BaseModel):
     valor_total_cliente: float
     caucao_paga: bool
     created_at: datetime
-    model_config = {"from_attributes": True}
+    class Config: from_attributes = True
 
 class PropostaCreate(BaseModel):
     leilao_id: str
@@ -283,7 +287,7 @@ class NotificacaoOut(BaseModel):
     descricao: Optional[str]
     lida: bool
     created_at: datetime
-    model_config = {"from_attributes": True}
+    class Config: from_attributes = True
 
 # ── HELPERS ──
 def get_db():
@@ -584,20 +588,67 @@ def marcar_lida(nid: str, user: User = Depends(get_current_user), db: Session = 
 
 # ── IA ──
 @app.post("/api/ia/transcrever", tags=["IA"])
-async def transcrever_audio(user: User = Depends(get_current_user)):
-    """Endpoint para transcrição de áudio via Whisper — aceita ficheiro de áudio"""
+async def transcrever_audio(
+    audio: UploadFile = File(...),
+    user: User = Depends(get_current_user)
+):
+    """Transcrição de áudio via Whisper"""
     openai_key = os.getenv("OPENAI_API_KEY")
-    if not openai_key:
-        return {"transcricao": "OpenAI não configurado — configure OPENAI_API_KEY no .env"}
-    return {"transcricao": "Transcrição via Whisper disponível quando OPENAI_API_KEY estiver configurado"}
+    if not openai_key or not OpenAI:
+        return {"transcricao": "OpenAI não configurado"}
+    try:
+        client = OpenAI(api_key=openai_key)
+        contents = await audio.read()
+        with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
+            tmp.write(contents)
+            tmp_path = tmp.name
+        with open(tmp_path, "rb") as f:
+            result = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                language="pt"
+            )
+        os.unlink(tmp_path)
+        return {"transcricao": result.text}
+    except Exception as e:
+        return {"transcricao": "", "erro": str(e)}
 
 @app.post("/api/ia/gerar-caderno", tags=["IA"])
 async def gerar_caderno(descricao: str, user: User = Depends(get_current_user)):
-    """Gera caderno de encargos a partir de descrição de texto via GPT-4"""
+    """Gera caderno de encargos a partir de descrição via GPT-4"""
     openai_key = os.getenv("OPENAI_API_KEY")
-    if not openai_key:
-        return {"caderno": "OpenAI não configurado"}
-    return {"caderno": "Geração de caderno via GPT-4 disponível quando OPENAI_API_KEY estiver configurado"}
+    if not openai_key or not OpenAI:
+        return {"caderno": {}, "especialidades": [], "resumo": "OpenAI não configurado"}
+    try:
+        client = OpenAI(api_key=openai_key)
+        prompt = f"""Analisa esta descrição de obra e devolve um JSON com:
+- "titulo": título resumido da obra
+- "especialidades": lista de especialidades necessárias (ex: ["Canalização", "Revestimentos", "Pintura"])
+- "resumo": resumo técnico em 2-3 frases
+- "tarefas": lista de tarefas específicas identificadas
+- "materiais": materiais mencionados ou implícitos
+- "prazo_estimado": estimativa de prazo em dias úteis
+
+Descrição: {descricao}
+
+Responde APENAS com JSON válido, sem texto adicional."""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=800
+        )
+        texto = response.choices[0].message.content.strip()
+        # Limpar markdown se existir
+        if texto.startswith("```"):
+            texto = texto.split("```")[1]
+            if texto.startswith("json"):
+                texto = texto[4:]
+        caderno = json.loads(texto)
+        return {"caderno": caderno, "ok": True}
+    except Exception as e:
+        return {"caderno": {}, "erro": str(e), "ok": False}
 
 # ── HEALTH ──
 @app.get("/", tags=["Health"])
